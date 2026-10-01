@@ -6,7 +6,7 @@ A Google Sheet that alerts a Slack channel **30, 7 and 1 day before** a contract
 
 No server, no cost: it all runs on Apps Script inside the sheet itself. Setup takes about 10 minutes. Available in English and Spanish.
 
-![Example Slack message](docs/slack-ejemplo.png)
+![Example Slack message](docs/slack-example-en.png)
 
 ## The problem
 
