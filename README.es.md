@@ -20,6 +20,8 @@ Las fechas de vencimiento suelen estar en el calendario de una persona, en un ma
 - **Renovar reinicia solo.** Actualizás la fecha de vencimiento y los avisos vuelven a empezar.
 - **No pierde avisos.** Si Slack falla, no marca nada como avisado y reintenta en la próxima corrida.
 - **Detecta fechas mal cargadas.** Una fecha imposible (31/02) o un texto que no es fecha se avisa una vez para que lo corrijas.
+- **Un clic a la planilla.** Cada mensaje de Slack termina con un link que abre directamente la pestaña de vencimientos.
+- **Planilla con colores.** Las filas vencidas se ponen en rojo y las que vencen en 7 días o menos, en amarillo, para ver de un vistazo qué hay que actualizar.
 
 ## Instalación
 
@@ -65,6 +67,8 @@ Hacé clic en **Vencimientos** y usá las opciones en este orden:
 
 Después borrá las filas de ejemplo (dejá la fila de encabezados) y cargá tus vencimientos reales.
 
+> **¿Ya tenías instalada una versión anterior?** Pegá el `Code.gs` nuevo (mantené tu valor de `LANG`), guardá, recargá la planilla y hacé clic en **Vencimientos** → **Aplicar colores**. El link en Slack aparece desde el próximo aviso.
+
 ## Columnas
 
 | Columna | Obligatoria | Detalle |
@@ -85,6 +89,8 @@ Todo se ajusta al principio de `Code.gs`:
 - **Idioma.** `LANG`: `'es'` o `'en'`.
 - **Umbrales.** Editá `CONFIG.BUCKETS` (mantené el orden de menor a mayor) y agregá la etiqueta correspondiente en `STRINGS.es.bucketLabels`.
 - **Hora de la revisión.** Cambiá `CONFIG.TRIGGER_HOUR` y volvé a correr *Activar revisión diaria*.
+- **Ventana del amarillo.** `CONFIG.HIGHLIGHT_SOON_DAYS` (por defecto, 7). Ponelo en `0` para marcar solo los vencidos en rojo. Después de cambiarlo, corré *Aplicar colores*.
+- **Colores.** Editá `HIGHLIGHT_COLORS`. El script solo reemplaza las reglas de color que creó él, así que tu propio formato condicional se mantiene.
 
 ## Problemas frecuentes
 
@@ -105,6 +111,7 @@ Para confirmar que se ejecutó: en Apps Script → *Ejecuciones*, tiene que apar
 - **Horario aproximado.** Google ejecuta el trigger en algún momento dentro de la hora configurada, no en un minuto exacto.
 - **Los vencidos se avisan una sola vez.** No hay recordatorio insistente después del vencimiento.
 - **Errores por mail.** Si el script falla, Google le manda un mail al dueño del script.
+- **Los colores necesitan fechas reales.** Solo se colorean las celdas con formato de fecha. Las fechas escritas como texto igual generan avisos en Slack, pero sin color.
 
 ## Licencia
 

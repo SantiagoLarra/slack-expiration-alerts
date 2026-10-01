@@ -6,7 +6,7 @@ A Google Sheet that alerts a Slack channel **30, 7 and 1 day before** a contract
 
 No server, no cost: it all runs on Apps Script inside the sheet itself. Setup takes about 10 minutes. Available in English and Spanish.
 
-![Example Slack message](docs/slack-example-en.png)
+![Example Slack message](docs/slack-ejemplo.png)
 
 ## The problem
 
@@ -20,6 +20,8 @@ Expiration dates usually live in one person's calendar, in an old email, or nowh
 - **Renewing resets it.** Update the due date and the alerts start over.
 - **Doesn't lose alerts.** If Slack fails, nothing is marked as sent and it retries on the next run.
 - **Flags bad dates.** An impossible date (Feb 31) or text that isn't a date is reported once so you can fix it.
+- **One click to the sheet.** Every Slack message ends with a link that opens the expirations tab directly.
+- **Color-coded sheet.** Overdue rows turn red and rows due within 7 days turn yellow, so you see what needs updating at a glance.
 
 ## Setup
 
@@ -65,6 +67,8 @@ Click **Expirations** and use the options in this order:
 
 Then delete the sample rows (keep the header row) and add your real expirations.
 
+> **Already installed an earlier version?** Paste the new `Code.gs` (keep your `LANG` value), save, reload the sheet and click **Expirations** → **Apply colors**. The Slack link works from the next alert on.
+
 ## Columns
 
 | Column | Required | Details |
@@ -85,6 +89,8 @@ Everything lives at the top of `Code.gs`:
 - **Language.** `LANG`: `'en'` or `'es'`.
 - **Thresholds.** Edit `CONFIG.BUCKETS` (keep them lowest to highest) and add the matching label in `STRINGS.en.bucketLabels`.
 - **Check time.** Change `CONFIG.TRIGGER_HOUR` and run *Enable daily check* again.
+- **Yellow highlight window.** `CONFIG.HIGHLIGHT_SOON_DAYS` (default 7). Set it to `0` to only highlight overdue rows in red. Run *Apply colors* after changing it.
+- **Colors.** Edit `HIGHLIGHT_COLORS`. The script only replaces the color rules it created, so your own conditional formatting is kept.
 
 ## Troubleshooting
 
@@ -105,6 +111,7 @@ To confirm: in Apps Script → *Executions*, you should see `onOpen` every time 
 - **Approximate timing.** Google runs the trigger at some point within the configured hour, not at an exact minute.
 - **Overdue items are alerted once.** There's no repeated reminder after the due date.
 - **Email on errors.** If the script fails, Google emails the script owner.
+- **Colors need real dates.** Row colors only apply to date-formatted cells. Dates typed as plain text still get Slack alerts, but no color.
 
 ## License
 

@@ -12,6 +12,7 @@ const LANG = 'en'; // 'en' = English | 'es' = Español
 
 const CONFIG = {
   TRIGGER_HOUR: 9, // approximate hour of the daily check (script time zone)
+  HIGHLIGHT_SOON_DAYS: 7, // rows due within N days turn yellow (0 = off). Overdue rows always turn red.
   // Thresholds, lowest to highest. Each item gets ONE alert per threshold.
   BUCKETS: [
     { key: 'VENCIDO', max: -1 },
@@ -40,7 +41,7 @@ const STRINGS = {
     invalidValue: 'entered value: "{v}"', empty: '(empty)',
     dateFormat: 'yyyy-MM-dd', sheetDateFormat: 'yyyy-mm-dd',
     menu: 'Expirations',
-    menuItems: ['1. Create sample sheet', '2. Set up Slack webhook', '3. Send test message', '4. Enable daily check', 'Check now', 'Disable daily check'],
+    menuItems: ['1. Create sample sheet', '2. Set up Slack webhook', '3. Send test message', '4. Enable daily check', 'Check now', 'Disable daily check', 'Apply colors'],
     errNoWebhook: 'Webhook missing. Expirations menu → Set up Slack webhook.',
     errNoSheet: 'Sheet "{s}" not found. Expirations menu → Create sample sheet.',
     errMissingCols: 'Missing columns: {c}',
@@ -64,6 +65,9 @@ const STRINGS = {
     triggerOn: 'Daily check enabled between {h1}:00 and {h2}:00 (time zone: {tz}).',
     triggerOff: 'Daily check disabled.', triggerNone: 'No daily check was active.',
     toastSent: '{n} alert(s) sent to Slack.', toastNone: 'Nothing new to alert.',
+    openSheet: 'Open sheet',
+    formatApplied: 'Colors applied: overdue rows in red, rows due within {n} days in yellow.',
+    formatAppliedNoSoon: 'Colors applied: overdue rows in red.',
   },
   es: {
     sheetName: 'Vencimientos',
@@ -82,7 +86,7 @@ const STRINGS = {
     invalidValue: 'valor cargado: "{v}"', empty: '(vacío)',
     dateFormat: 'dd/MM/yyyy', sheetDateFormat: 'dd/mm/yyyy',
     menu: 'Vencimientos',
-    menuItems: ['1. Crear hoja de ejemplo', '2. Configurar webhook de Slack', '3. Enviar mensaje de prueba', '4. Activar revisión diaria', 'Revisar ahora', 'Desactivar revisión diaria'],
+    menuItems: ['1. Crear hoja de ejemplo', '2. Configurar webhook de Slack', '3. Enviar mensaje de prueba', '4. Activar revisión diaria', 'Revisar ahora', 'Desactivar revisión diaria', 'Aplicar colores'],
     errNoWebhook: 'Falta el webhook. Menú Vencimientos → Configurar webhook de Slack.',
     errNoSheet: 'No existe la hoja "{s}". Menú Vencimientos → Crear hoja de ejemplo.',
     errMissingCols: 'Faltan columnas: {c}',
@@ -106,6 +110,9 @@ const STRINGS = {
     triggerOn: 'Revisión diaria activada entre las {h1} y las {h2} hs (zona horaria: {tz}).',
     triggerOff: 'Revisión diaria desactivada.', triggerNone: 'No había revisión diaria activa.',
     toastSent: '{n} aviso(s) enviados a Slack.', toastNone: 'Nada nuevo para avisar.',
+    openSheet: 'Abrir planilla',
+    formatApplied: 'Colores aplicados: vencidos en rojo, y en amarillo lo que vence en {n} días o menos.',
+    formatAppliedNoSoon: 'Colores aplicados: vencidos en rojo.',
   },
 };
 
@@ -136,6 +143,7 @@ function checkExpirations() {
   if (data.length < 2) return 0;
 
   const idx = indexColumns_(data[0]);
+  applyHighlighting_(sheet, idx); // keeps colors correct even if columns were moved
   const today = startOfDay_(new Date());
   const alerts = [];
   const lastAlertValues = data.slice(1).map(function (r) { return [r[idx.LAST_ALERT]]; });
@@ -181,7 +189,7 @@ function checkExpirations() {
   }
 
   // If Slack fails this throws and NOTHING is marked: it retries on the next run.
-  sendToSlack_(webhook, buildMessage_(alerts, today));
+  sendToSlack_(webhook, buildMessage_(alerts, today, sheetUrl_(sheet)));
   sheet.getRange(2, idx.LAST_ALERT + 1, lastAlertValues.length, 1).setValues(lastAlertValues);
   console.log('Alerts sent: ' + alerts.length);
   return alerts.length;
@@ -194,7 +202,7 @@ function revisarVencimientos() {
 
 /* ───────────────────────── Message ───────────────────────── */
 
-function buildMessage_(alerts, today) {
+function buildMessage_(alerts, today, sheetUrl) {
   const order = CONFIG.BUCKETS.map(function (b) { return b.key; }).concat([INVALID_KEY]);
   const lines = ['*' + T.title + ' — ' + formatDisplay_(today) + '*'];
 
@@ -206,6 +214,7 @@ function buildMessage_(alerts, today) {
     group.forEach(function (a) { lines.push('• ' + formatAlert_(a)); });
   });
 
+  if (sheetUrl) lines.push('', '<' + sheetUrl + '|📄 ' + T.openSheet + '>');
   return lines.join('\n');
 }
 
@@ -275,6 +284,60 @@ function getSheet_() {
   return sheet;
 }
 
+/** Direct link to the expirations tab. */
+function sheetUrl_(sheet) {
+  return SpreadsheetApp.getActive().getUrl() + '#gid=' + sheet.getSheetId();
+}
+
+const HIGHLIGHT_COLORS = {
+  overdue: { background: '#F4CCCC', font: '#990000' },
+  soon: { background: '#FFF2CC', font: '#7F6000' },
+};
+
+/**
+ * Colors whole rows by due date: red if overdue, yellow if due within HIGHLIGHT_SOON_DAYS.
+ * Replaces only the rules this script created; your own conditional formats are kept.
+ * Formulas avoid commas so they work with any spreadsheet locale.
+ */
+function applyHighlighting_(sheet, idx) {
+  const col = columnLetter_(idx.DUE + 1);
+  const range = sheet.getRange(2, 1, Math.max(sheet.getMaxRows() - 1, 1), sheet.getLastColumn());
+  const d = '$' + col + '2';
+  const overdueFormula = '=(' + d + '<TODAY())*(' + d + '<>"")';
+  const soonFormula = '=(' + d + '>=TODAY())*(' + d + '<=TODAY()+' + CONFIG.HIGHLIGHT_SOON_DAYS + ')';
+
+  const ours = function (rule) {
+    const c = rule.getBooleanCondition && rule.getBooleanCondition();
+    const v = c && c.getCriteriaValues && c.getCriteriaValues();
+    return !!(v && v.length && /TODAY\(\)/.test(String(v[0])) && /^=\(\$[A-Z]+2(<|>=)TODAY\(\)\)/.test(String(v[0])));
+  };
+  const rules = sheet.getConditionalFormatRules().filter(function (r) { return !ours(r); });
+
+  rules.push(SpreadsheetApp.newConditionalFormatRule()
+    .whenFormulaSatisfied(overdueFormula)
+    .setBackground(HIGHLIGHT_COLORS.overdue.background)
+    .setFontColor(HIGHLIGHT_COLORS.overdue.font)
+    .setRanges([range]).build());
+  if (CONFIG.HIGHLIGHT_SOON_DAYS > 0) {
+    rules.push(SpreadsheetApp.newConditionalFormatRule()
+      .whenFormulaSatisfied(soonFormula)
+      .setBackground(HIGHLIGHT_COLORS.soon.background)
+      .setFontColor(HIGHLIGHT_COLORS.soon.font)
+      .setRanges([range]).build());
+  }
+  sheet.setConditionalFormatRules(rules);
+}
+
+function columnLetter_(n) {
+  let s = '';
+  while (n > 0) {
+    const m = (n - 1) % 26;
+    s = String.fromCharCode(65 + m) + s;
+    n = Math.floor((n - 1) / 26);
+  }
+  return s;
+}
+
 /** Finds columns by header name, so column order doesn't matter. */
 function indexColumns_(headerRow) {
   const headers = headerRow.map(function (h) { return String(h).trim(); });
@@ -338,6 +401,7 @@ function onOpen() {
     .addSeparator()
     .addItem(m[4], 'menuCheckNow')
     .addItem(m[5], 'disableDailyCheck')
+    .addItem(m[6], 'applyColors')
     .addToUi();
 }
 
@@ -362,6 +426,7 @@ function createSampleSheet() {
   sheet.setFrozenRows(1);
   sheet.autoResizeColumns(1, rows[0].length);
   sheet.getRange('F1').setNote(T.lastAlertNote);
+  applyHighlighting_(sheet, indexColumns_(rows[0]));
   ui.alert(T.sheetCreated);
 }
 
@@ -398,6 +463,18 @@ function enableDailyCheck() {
 
 function disableDailyCheck() {
   SpreadsheetApp.getUi().alert(removeTriggers_() ? T.triggerOff : T.triggerNone);
+}
+
+/** Applies the red/yellow row colors to an existing sheet right away. */
+function applyColors() {
+  try {
+    const sheet = getSheet_();
+    applyHighlighting_(sheet, indexColumns_(sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0]));
+    SpreadsheetApp.getUi().alert(CONFIG.HIGHLIGHT_SOON_DAYS > 0
+      ? t_(T.formatApplied, { n: CONFIG.HIGHLIGHT_SOON_DAYS }) : T.formatAppliedNoSoon);
+  } catch (e) {
+    SpreadsheetApp.getUi().alert(T.error + e.message);
+  }
 }
 
 function menuCheckNow() {
