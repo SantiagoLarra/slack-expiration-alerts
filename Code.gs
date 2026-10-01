@@ -15,8 +15,8 @@ const CONFIG = {
   HIGHLIGHT_SOON_DAYS: 7, // rows due within N days turn yellow (0 = off). Overdue rows always turn red.
   // Thresholds, lowest to highest. Each item gets ONE alert per threshold.
   BUCKETS: [
-    { key: 'VENCIDO', max: -1 },
-    { key: 'HOY',     max: 0 },
+    { key: 'OVERDUE', max: -1 },
+    { key: 'TODAY',   max: 0 },
     { key: '1D',      max: 1 },
     { key: '7D',      max: 7 },
     { key: '30D',     max: 30 },
@@ -28,13 +28,15 @@ const STRINGS = {
     sheetName: 'Expirations',
     columns: { ITEM: 'Item', TYPE: 'Type', OWNER: 'Owner', DUE: 'Due date', NOTES: 'Notes', LAST_ALERT: 'Last alert' },
     bucketLabels: {
-      VENCIDO: '🔴 Overdue',
-      HOY: '🔴 Due today',
+      OVERDUE: '🔴 Overdue',
+      TODAY: '🔴 Due today',
       '1D': '🟠 Due tomorrow',
       '7D': '🟡 Due within 7 days',
       '30D': '🔵 Due within 30 days',
-      INVALIDA: '⚠️ Invalid date (fix it in the sheet)',
+      INVALID: '⚠️ Invalid date (fix it in the sheet)',
     },
+    // How each threshold is written in the "Last alert" column.
+    alertKeys: { OVERDUE: 'OVERDUE', TODAY: 'TODAY', '1D': '1D', '7D': '7D', '30D': '30D', INVALID: 'INVALID' },
     title: 'Upcoming expirations',
     dueMany: 'due in {n} days', dueTomorrow: 'due tomorrow', dueToday: 'due today',
     overdueOne: 'was due yesterday', overdueMany: 'was due {n} days ago',
@@ -73,13 +75,15 @@ const STRINGS = {
     sheetName: 'Vencimientos',
     columns: { ITEM: 'Item', TYPE: 'Tipo', OWNER: 'Responsable', DUE: 'Vencimiento', NOTES: 'Notas', LAST_ALERT: 'Último aviso' },
     bucketLabels: {
-      VENCIDO: '🔴 Vencidos',
-      HOY: '🔴 Vencen hoy',
+      OVERDUE: '🔴 Vencidos',
+      TODAY: '🔴 Vencen hoy',
       '1D': '🟠 Vencen mañana',
       '7D': '🟡 Vencen en 7 días o menos',
       '30D': '🔵 Vencen en 30 días o menos',
-      INVALIDA: '⚠️ Fecha inválida (corregir en la planilla)',
+      INVALID: '⚠️ Fecha inválida (corregir en la planilla)',
     },
+    // Cómo se escribe cada umbral en la columna "Último aviso".
+    alertKeys: { OVERDUE: 'VENCIDO', TODAY: 'HOY', '1D': '1D', '7D': '7D', '30D': '30D', INVALID: 'INVALIDA' },
     title: 'Vencimientos',
     dueMany: 'vence en {n} días', dueTomorrow: 'vence mañana', dueToday: 'vence hoy',
     overdueOne: 'venció ayer', overdueMany: 'venció hace {n} días',
@@ -117,11 +121,33 @@ const STRINGS = {
 };
 
 const T = STRINGS[LANG] || STRINGS.en;
-const INVALID_KEY = 'INVALIDA';
+const INVALID_KEY = 'INVALID';
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const WEBHOOK_PROPERTY = 'SLACK_WEBHOOK_URL';
 const HANDLER = 'checkExpirations';
 const LEGACY_HANDLERS = ['revisarVencimientos']; // trigger name used by v1
+
+/** Value written in the "Last alert" column: localized threshold + "|" + date or raw value. */
+function alertKey_(bucketKey, suffix) {
+  return (T.alertKeys[bucketKey] || bucketKey) + '|' + suffix;
+}
+
+/**
+ * Turns any "Last alert" value, in either language, back into its internal form,
+ * so switching LANG (or upgrading from v1) never re-sends alerts.
+ */
+function normalizeAlertKey_(value) {
+  const str = String(value || '');
+  const sep = str.indexOf('|');
+  if (sep === -1) return str;
+  const prefix = str.slice(0, sep);
+  let canonical = prefix;
+  Object.keys(STRINGS).forEach(function (lang) {
+    const keys = STRINGS[lang].alertKeys;
+    Object.keys(keys).forEach(function (k) { if (keys[k] === prefix) canonical = k; });
+  });
+  return canonical + str.slice(sep);
+}
 
 /** Fills {placeholders} in a string. */
 function t_(template, vars) {
@@ -146,6 +172,7 @@ function checkExpirations() {
   applyHighlighting_(sheet, idx); // keeps colors correct even if columns were moved
   const today = startOfDay_(new Date());
   const alerts = [];
+  let relabeled = false;
   const lastAlertValues = data.slice(1).map(function (r) { return [r[idx.LAST_ALERT]]; });
 
   for (let i = 1; i < data.length; i++) {
@@ -159,13 +186,14 @@ function checkExpirations() {
       owner: String(row[idx.OWNER] || '').trim(),
       notes: String(row[idx.NOTES] || '').trim(),
     };
-    const lastKey = String(row[idx.LAST_ALERT] || '');
+    const lastKey = normalizeAlertKey_(row[idx.LAST_ALERT]);
     const due = parseDate_(row[idx.DUE]);
 
-    let alert, key;
+    let alert, key, written;
     if (!due) {
       const raw = String(row[idx.DUE] || '').trim() || T.empty;
       key = INVALID_KEY + '|' + raw;
+      written = alertKey_(INVALID_KEY, raw);
       alert = Object.assign({ bucketKey: INVALID_KEY, rawDate: raw }, base);
     } else {
       const daysLeft = Math.round((due - today) / MS_PER_DAY);
@@ -175,22 +203,32 @@ function checkExpirations() {
       if (!bucket) continue;
       // The key includes the date: renewing (changing the date) resets alerts automatically.
       key = bucket.key + '|' + formatIso_(due);
+      written = alertKey_(bucket.key, formatIso_(due));
       alert = Object.assign({ bucketKey: bucket.key, due: due, daysLeft: daysLeft }, base);
     }
 
-    if (lastKey === key) continue; // already alerted for this threshold
+    if (lastKey === key) {
+      // Already alerted. Rewrite values from another language or v1 without re-alerting.
+      if (String(row[idx.LAST_ALERT]) !== written) { lastAlertValues[i - 1][0] = written; relabeled = true; }
+      continue;
+    }
     alerts.push(alert);
-    lastAlertValues[i - 1][0] = key;
+    lastAlertValues[i - 1][0] = written;
   }
 
+  const writeLastAlerts = function () {
+    sheet.getRange(2, idx.LAST_ALERT + 1, lastAlertValues.length, 1).setValues(lastAlertValues);
+  };
+
   if (!alerts.length) {
+    if (relabeled) writeLastAlerts();
     console.log('No new alerts.');
     return 0;
   }
 
   // If Slack fails this throws and NOTHING is marked: it retries on the next run.
   sendToSlack_(webhook, buildMessage_(alerts, today, sheetUrl_(sheet)));
-  sheet.getRange(2, idx.LAST_ALERT + 1, lastAlertValues.length, 1).setValues(lastAlertValues);
+  writeLastAlerts();
   console.log('Alerts sent: ' + alerts.length);
   return alerts.length;
 }
